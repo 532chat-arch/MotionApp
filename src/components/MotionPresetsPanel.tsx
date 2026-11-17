@@ -1,7 +1,12 @@
 import React, { useCallback, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
+  Archive,
   BookmarkPlus,
+  BookOpen,
   Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
   Download,
   Eye,
   HelpCircle,
@@ -30,6 +35,7 @@ import {
   MotionPresetDefinition,
   PresetCategory,
 } from '../services/AnimationPresetRegistry';
+import { serializeMotionXArchive } from '../storage/IndexedDbStorage';
 import { useStudioStore } from '../store/useStudioStore';
 import { LyricsStudioModal } from './LyricsStudioModal';
 import { PresetHoverPreview } from './PresetHoverPreview';
@@ -616,6 +622,32 @@ const LAYER_ONLY_CATEGORIES: Array<{ id: 'all' | PresetCategory; label: string }
   { id: 'effects', label: 'Effects' },
 ];
 
+const EXAMPLE_CUSTOM_PRESET_OBJ = {
+  id: 'custom.hair.velvet-breeze',
+  version: '1.0.0',
+  name: 'Velvet Breeze',
+  category: 'hair',
+  description: 'Soft layered wind sway derived from Gentle Wind.',
+  targetType: ['image', 'sprite', 'character-part', 'layer'],
+  duration: 2.4,
+  loop: true,
+  playbackDirection: 'forward',
+  blendMode: 'add',
+  defaultPivot: 'top',
+  basePresetId: 'hair.gentle-wind',
+  defaultIntensity: 1.15,
+  parameters: {
+    rotationStrength: 6,
+    movementStrength: 7,
+    meshDeform: 5,
+    speed: 1.1,
+    windDirection: 'right',
+  },
+  parameterControls: [],
+};
+
+const EXAMPLE_CUSTOM_PRESET_JSON = JSON.stringify(EXAMPLE_CUSTOM_PRESET_OBJ, null, 2);
+
 export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
   scope = 'all',
   compositionId,
@@ -630,6 +662,7 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
     selectLayer,
     apply_motion_preset,
     dispatchCommand,
+    setWorkspace,
     showFeedback,
   } = useStudioStore();
 
@@ -650,8 +683,10 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
   const [hoveredPresetId, setHoveredPresetId] = useState<string | null>(null);
   const [pinnedPresetId, setPinnedPresetId] = useState<string | null>(null);
   const [importError, setImportError] = useState<string | null>(null);
-  const [showPresetGuide, setShowPresetGuide] = useState(false);
+  const [animationGuideOpen, setAnimationGuideOpen] = useState(scope === 'all');
+  const [copiedExampleJson, setCopiedExampleJson] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const guideSectionRef = useRef<HTMLElement | null>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const previewPreset = useMemo(() => {
@@ -801,34 +836,40 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
       schemaVersion: 1,
       exportedAt: new Date().toISOString(),
       presetCount: 1,
-      presets: [
-        {
-          id: 'custom.hair.velvet-breeze',
-          version: '1.0.0',
-          name: 'Velvet Breeze',
-          category: 'hair',
-          description: 'Example user-created preset derived from Gentle Wind.',
-          targetType: ['image', 'sprite', 'character-part', 'layer'],
-          duration: 2.4,
-          loop: true,
-          playbackDirection: 'forward',
-          blendMode: 'add',
-          defaultPivot: 'top',
-          basePresetId: 'hair.gentle-wind',
-          defaultIntensity: 1.15,
-          parameters: {
-            rotationStrength: 6,
-            movementStrength: 7,
-            meshDeform: 5,
-            speed: 1.1,
-            windDirection: 'right',
-          },
-          parameterControls: [],
-        },
-      ],
+      presets: [EXAMPLE_CUSTOM_PRESET_OBJ],
     };
     downloadJsonFile('custom-preset-template.json', JSON.stringify(starterBundle, null, 2));
     showFeedback('info', 'Downloaded custom preset JSON starter template');
+  };
+
+  const handleCopyExampleJson = async () => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(EXAMPLE_CUSTOM_PRESET_JSON);
+        setCopiedExampleJson(true);
+        showFeedback('info', 'Copied preset JSON structure to clipboard');
+        window.setTimeout(() => setCopiedExampleJson(false), 1800);
+        return;
+      }
+      showFeedback('error', 'Clipboard copy is unavailable in this browser context');
+    } catch {
+      showFeedback('error', 'Unable to copy preset JSON to clipboard');
+    }
+  };
+
+  const handleSaveMotionXArchive = () => {
+    const json = serializeMotionXArchive(project);
+    const safeName = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const fileName = `${safeName || 'motion-project'}.motionx`;
+    downloadJsonFile(fileName, json);
+    showFeedback('info', `Saved ${fileName} for internal sharing`);
+  };
+
+  const handleJumpToGuide = () => {
+    setAnimationGuideOpen(true);
+    requestAnimationFrame(() => {
+      guideSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   };
 
   const handleImportJsonFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -839,6 +880,19 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
     setImportError(null);
     try {
       const text = await file.text();
+      try {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        if (parsed && typeof parsed === 'object' && parsed.format === 'motionx-project-archive') {
+          const msg =
+            'This is a .motionx project archive. Open it via Home -> Import .motionx or Export -> Import .motionx.';
+          setImportError(msg);
+          showFeedback('info', msg);
+          return;
+        }
+      } catch {
+        // Fall through to registry error handling below
+      }
+
       const res = registry.importPresetsFromJson(text, { overwriteExisting: true });
       const totalAddedOrUpdated = res.imported.length + res.replaced.length;
       if (totalAddedOrUpdated > 0) {
@@ -993,7 +1047,7 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
             <input
               ref={fileInputRef}
               type="file"
-              accept=".json,application/json"
+              accept=".json,.motionx,application/json"
               aria-label="Import motion presets JSON file"
               onChange={handleImportJsonFile}
               className="hidden"
@@ -1022,12 +1076,11 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setShowPresetGuide((open) => !open)}
-              aria-expanded={showPresetGuide}
-              aria-label="How to create and share presets"
-              title="How to create and share presets"
+              onClick={handleJumpToGuide}
+              aria-label="Jump to Animation Guide"
+              title="Jump to Animation Guide"
               className={`w-7 min-h-[28px] rounded-lg border flex items-center justify-center transition-colors ${
-                showPresetGuide
+                animationGuideOpen
                   ? 'bg-blue-600/25 border-blue-400/60 text-blue-200'
                   : 'bg-[#111317] hover:bg-white/8 border-white/10 text-slate-400 hover:text-white'
               }`}
@@ -1036,37 +1089,6 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
             </button>
           </div>
         </div>
-
-        <p className="text-[10px] text-slate-400 leading-relaxed">
-          To create a preset: <strong className="font-medium text-slate-200">Apply</strong> a motion, tune its sliders above, then click the <strong className="font-medium text-slate-200">Bookmark (+)</strong> icon on the modifier to save &amp; export as JSON.
-        </p>
-
-        {showPresetGuide && (
-          <div className="p-2.5 rounded-xl bg-[#111317] border border-blue-500/25 space-y-2 text-[11px] text-slate-300">
-            <div className="flex items-center justify-between gap-2">
-              <span className="font-semibold text-slate-100">Creating &amp; Sharing Presets</span>
-              <button
-                type="button"
-                onClick={handleDownloadPresetTemplate}
-                className="px-2 py-1 rounded-md bg-blue-600/20 hover:bg-blue-600/35 border border-blue-500/35 text-[10px] font-medium text-blue-200 flex items-center gap-1 shrink-0 transition-colors"
-              >
-                <Download className="w-3 h-3" />
-                <span>Starter JSON</span>
-              </button>
-            </div>
-            <ol className="list-decimal list-inside space-y-1 text-[10px] text-slate-400 leading-relaxed">
-              <li>
-                <span className="text-slate-200 font-medium">Save from Studio:</span> Apply any preset, adjust Intensity, Speed, Pivot, and parameters in the modifier stack, then click <span className="text-emerald-300">Bookmark (+)</span> to add it to your library.
-              </li>
-              <li>
-                <span className="text-slate-200 font-medium">Export to JSON:</span> Use <span className="text-slate-200">Export</span> above for all custom presets, or the download icon on any card for a single <code className="text-blue-300">.json</code> file.
-              </li>
-              <li>
-                <span className="text-slate-200 font-medium">Import Preset JSON:</span> Click <span className="text-slate-200">Import</span> and choose a single preset object, array, or <code className="text-blue-300">motion-studio.presets.v1</code> bundle with <code className="text-slate-300">id, name, category, targetType, duration, loop, parameters</code>.
-              </li>
-            </ol>
-          </div>
-        )}
 
         {importError && (
           <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-[11px] text-red-200 flex items-center justify-between gap-2">
@@ -1281,6 +1303,130 @@ export const MotionPresetsPanel: React.FC<MotionPresetsPanelProps> = ({
           )}
         </div>
       </div>
+
+      {/* Dedicated Animation Guide Section */}
+      <section
+        ref={guideSectionRef}
+        aria-labelledby="animation-guide-heading"
+        className="rounded-xl bg-[#111317] border border-white/10 overflow-hidden"
+      >
+        <button
+          type="button"
+          onClick={() => setAnimationGuideOpen((open) => !open)}
+          aria-expanded={animationGuideOpen}
+          className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left hover:bg-white/[0.03] transition-colors"
+        >
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-100">
+            <BookOpen className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+            <span id="animation-guide-heading">Animation Guide</span>
+          </span>
+          <span className="flex items-center gap-1.5 text-[10px] text-slate-400 shrink-0">
+            <span>Custom JSON &amp; .motionx</span>
+            {animationGuideOpen ? (
+              <ChevronUp className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronDown className="w-3.5 h-3.5" />
+            )}
+          </span>
+        </button>
+
+        {animationGuideOpen && (
+          <div className="px-3 pb-3 pt-1 border-t border-white/8 space-y-3 text-[11px] text-slate-300">
+            {/* Step 1: Create a Custom Preset */}
+            <div className="space-y-1.5">
+              <div className="text-[11px] font-semibold text-slate-100">
+                1. Create a Custom Preset
+              </div>
+              <ol className="list-decimal list-inside space-y-1 text-[10px] text-slate-400 leading-relaxed">
+                <li>
+                  Select a target layer (or Camera tab) and click <span className="text-slate-200 font-medium">Apply</span> on any base motion in the library above.
+                </li>
+                <li>
+                  Tune <span className="text-slate-200">Intensity</span>, <span className="text-slate-200">Speed</span>, <span className="text-slate-200">Cycle</span>, <span className="text-slate-200">Pivot Anchor</span>, and motion parameters in <span className="text-slate-200">Active Modifiers</span>.
+                </li>
+                <li>
+                  Click the <span className="text-emerald-300 font-medium">Bookmark (+)</span> icon on the modifier header, enter a preset name, and click <span className="text-emerald-300 font-medium">Save</span> to register it locally and enable <span className="text-slate-200">.json</span> export.
+                </li>
+              </ol>
+            </div>
+
+            {/* Step 2: Define the Preset JSON Structure */}
+            <div className="space-y-1.5 pt-2 border-t border-white/8">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-semibold text-slate-100">
+                  2. Define Preset JSON Structure
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={handleCopyExampleJson}
+                    className="px-2 py-1 rounded-md bg-[#181B20] hover:bg-white/10 border border-white/10 text-[10px] font-medium text-slate-200 flex items-center gap-1 transition-colors"
+                  >
+                    {copiedExampleJson ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                    <span>{copiedExampleJson ? 'Copied' : 'Copy JSON'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDownloadPresetTemplate}
+                    className="px-2 py-1 rounded-md bg-blue-600/20 hover:bg-blue-600/35 border border-blue-500/35 text-[10px] font-medium text-blue-200 flex items-center gap-1 transition-colors"
+                  >
+                    <Download className="w-3 h-3" />
+                    <span>Starter .json</span>
+                  </button>
+                </div>
+              </div>
+
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                Required keys: <code className="text-slate-200">id</code>, <code className="text-slate-200">version</code>, <code className="text-slate-200">name</code>, <code className="text-slate-200">category</code> (<code className="text-blue-300">character | hair | clothing | environment | camera | lyrics | effects</code>), <code className="text-slate-200">targetType</code>, <code className="text-slate-200">duration</code>, <code className="text-slate-200">loop</code>, and <code className="text-slate-200">parameters</code>. Include <code className="text-blue-300">basePresetId</code> to inherit an engine motion kernel while overriding defaults. Import single preset JSON objects, arrays, or <code className="text-blue-300">motion-studio.presets.v1</code> bundles via <span className="text-slate-200">Import</span> above.
+              </p>
+
+              <pre className="p-2 rounded-lg bg-[#0B0D12] border border-white/10 text-[10px] font-mono text-slate-200 overflow-x-auto leading-relaxed">
+                <code>{EXAMPLE_CUSTOM_PRESET_JSON}</code>
+              </pre>
+            </div>
+
+            {/* Step 3: Save as .motionx for Internal Sharing */}
+            <div className="space-y-2 pt-2 border-t border-white/8">
+              <div className="text-[11px] font-semibold text-slate-100">
+                3. Save as a .motionx File for Internal Sharing
+              </div>
+              <ol className="list-decimal list-inside space-y-1 text-[10px] text-slate-400 leading-relaxed">
+                <li>
+                  Apply your custom preset(s) to target layers or the composition camera so modifier stacks and tuned parameters are embedded in the project.
+                </li>
+                <li>
+                  Save the full project package as a <code className="text-emerald-300">.motionx</code> archive (<code className="text-blue-300">format: &quot;motionx-project-archive&quot;</code>) using <span className="text-slate-200 font-medium">Save .motionx File</span> below or from the <span className="text-slate-200 font-medium">Export</span> workspace.
+                </li>
+                <li>
+                  Share the <code className="text-emerald-300">.motionx</code> file internally with teammates—they can load the complete rigged scene, assets, and applied presets directly via <span className="text-slate-200">Home</span> or <span className="text-slate-200">Export &rarr; Import .motionx</span>.
+                </li>
+              </ol>
+
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={handleSaveMotionXArchive}
+                  className="min-h-[32px] px-2.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/35 border border-emerald-500/40 text-[10px] font-medium text-emerald-200 flex items-center gap-1.5 transition-colors"
+                >
+                  <Archive className="w-3.5 h-3.5" />
+                  <span>Save .motionx File</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setWorkspace('export')}
+                  className="min-h-[32px] px-2.5 rounded-lg bg-[#181B20] hover:bg-white/10 border border-white/10 text-[10px] font-medium text-slate-200 transition-colors"
+                >
+                  Open Export Workspace
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 };
