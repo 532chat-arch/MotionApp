@@ -34,7 +34,8 @@ export interface EvaluatedCamera {
 }
 
 export interface EvaluatedMeshDeform {
-  amplitude: number; // px max wave offset
+  amplitude: number; // px max wave offset along primary axis
+  amplitudeY?: number; // px max wave offset along secondary axis for 2D/angled wind
   frequency: number; // cycles along object length
   phase: number; // radians
   anchorEdge: 'top' | 'bottom' | 'left' | 'right';
@@ -324,7 +325,32 @@ export function applyLayerModifiers(
     const params = mod.params ?? {};
     const numParam = (key: string, fallback: number) =>
       typeof params[key] === 'number' ? (params[key] as number) : fallback;
-    const windSign = params.windDirection === 'left' ? -1 : 1;
+    const windDirectionRaw = typeof params.windDirection === 'string' ? params.windDirection : 'right';
+    let windAngleDeg = 0;
+    if (windDirectionRaw === 'custom' && typeof params.windAngle === 'number') {
+      windAngleDeg = params.windAngle;
+    } else if (windDirectionRaw === 'left') {
+      windAngleDeg = 180;
+    } else if (windDirectionRaw === 'up') {
+      windAngleDeg = -90;
+    } else if (windDirectionRaw === 'down') {
+      windAngleDeg = 90;
+    } else if (typeof params.windAngle === 'number' && params.windAngle !== 0 && windDirectionRaw === 'right') {
+      // Allow custom windAngle override if explicitly tweaked
+      windAngleDeg = params.windAngle;
+    }
+    const windRad = (windAngleDeg * Math.PI) / 180;
+    const windDirX = Math.abs(Math.cos(windRad)) < 1e-6 ? 0 : Math.cos(windRad);
+    const windDirY = Math.abs(Math.sin(windRad)) < 1e-6 ? 0 : Math.sin(windRad);
+    const windSign = windDirX < 0 || windDirectionRaw === 'left' ? -1 : 1;
+    const rotSign = windDirX !== 0 ? Math.sign(windDirX) : windDirY < 0 ? -1 : 1;
+    const resolveAnchorEdge = (
+      fallback: 'top' | 'bottom' | 'left' | 'right'
+    ): 'top' | 'bottom' | 'left' | 'right' => {
+      const v = params.anchorEdge;
+      if (v === 'top' || v === 'bottom' || v === 'left' || v === 'right') return v;
+      return fallback;
+    };
 
     let dx = 0;
     let dy = 0;
@@ -341,15 +367,25 @@ export function applyLayerModifiers(
         const rotRad = (numParam('rotationStrength', 4) * amp * Math.PI) / 180;
         const move = numParam('movementStrength', 5) * amp;
         const meshAmp = numParam('meshDeform', 4) * amp;
-        dRot = windSign * (rotRad * 0.3 + Math.sin(phase) * rotRad);
-        dx = windSign * Math.sin(phase) * move;
+        const waveEnvelope = 0.55 + 0.45 * Math.sin(phase);
+        dRot = rotSign * (rotRad * 0.3 + Math.sin(phase) * rotRad);
+        dx = windDirX * Math.sin(phase) * move;
+        dy = windDirY * Math.sin(phase) * move;
         if (meshAmp > 0.05) {
+          const anchor = resolveAnchorEdge('top');
+          const primaryAxis: 'x' | 'y' =
+            anchor === 'left' || anchor === 'right'
+              ? Math.abs(windDirX) > Math.abs(windDirY)
+                ? 'x'
+                : 'y'
+              : 'x';
           meshDeform = {
-            amplitude: meshAmp * windSign * (0.55 + 0.45 * Math.sin(phase)),
+            amplitude: meshAmp * windDirX * waveEnvelope,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * waveEnvelope : undefined,
             frequency: 1.5,
             phase,
-            anchorEdge: 'top',
-            axis: 'x',
+            anchorEdge: anchor,
+            axis: primaryAxis,
           };
         }
         break;
@@ -360,15 +396,18 @@ export function applyLayerModifiers(
         const move = numParam('movementStrength', 14) * amp;
         const meshAmp = numParam('meshDeform', 10) * amp;
         const gust = Math.sin(phase) * 0.65 + Math.sin(phase * 2.3) * 0.35;
-        dRot = windSign * (rotRad * 0.55 + gust * rotRad);
-        dx = windSign * (0.45 + 0.55 * gust) * move;
-        dy = Math.sin(phase * 2) * move * 0.18;
+        const waveEnvelope = 0.5 + 0.5 * gust;
+        dRot = rotSign * (rotRad * 0.55 + gust * rotRad);
+        dx = windDirX * (0.45 + 0.55 * gust) * move;
+        dy = Math.sin(phase * 2) * move * 0.18 + windDirY * (0.45 + 0.55 * gust) * move;
         if (meshAmp > 0.05) {
+          const anchor = resolveAnchorEdge('top');
           meshDeform = {
-            amplitude: meshAmp * windSign * (0.5 + 0.5 * gust),
+            amplitude: meshAmp * windDirX * waveEnvelope,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * waveEnvelope : undefined,
             frequency: 2.2,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: anchor,
             axis: 'x',
           };
         }
@@ -379,15 +418,17 @@ export function applyLayerModifiers(
         const rotRad = (numParam('rotationStrength', 5) * amp * Math.PI) / 180;
         const move = numParam('movementStrength', 9) * amp;
         const meshAmp = numParam('meshDeform', 7) * amp;
-        dRot = Math.sin(phase) * rotRad;
-        dy = Math.sin(phase) * move * 0.5 - Math.abs(Math.cos(phase * 0.5)) * move * 0.4;
-        dx = Math.cos(phase) * move * 0.25;
+        const wave = Math.sin(phase);
+        dRot = rotSign * wave * rotRad;
+        dy = (wave * 0.5 - Math.abs(Math.cos(phase * 0.5)) * 0.4) * move + windDirY * wave * move * 0.35;
+        dx = Math.cos(phase) * move * 0.25 * (windDirX !== 0 ? windDirX : 1);
         if (meshAmp > 0.05) {
           meshDeform = {
-            amplitude: meshAmp * Math.sin(phase),
+            amplitude: meshAmp * (windDirX !== 0 ? windDirX : 0.4) * wave,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * wave : undefined,
             frequency: 1.6,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: resolveAnchorEdge('top'),
             axis: 'x',
           };
         }
@@ -399,18 +440,33 @@ export function applyLayerModifiers(
         const sc = numParam('scaleStrength', 0.035) * amp;
         const rotRad = (numParam('rotationStrength', 2) * amp * Math.PI) / 180;
         const b = Math.abs(Math.sin(phase));
-        dy = -b * move;
+        const bounceDirY = windDirectionRaw === 'down' ? 1 : windDirectionRaw === 'up' ? -1 : -1;
+        dy = bounceDirY * b * move + windDirY * b * move * 0.35;
+        dx = windDirX !== 1 ? windDirX * b * move * 0.35 : 0;
         dScaleY = b * sc;
         dScaleX = -b * sc * 0.5;
-        dRot = Math.sin(phase) * rotRad;
+        dRot = rotSign * Math.sin(phase) * rotRad;
         break;
       }
 
       case 'hair.side-sway': {
         const rotRad = (numParam('rotationStrength', 3.5) * amp * Math.PI) / 180;
         const move = numParam('movementStrength', 3) * amp;
-        dRot = Math.sin(phase) * rotRad;
-        dx = Math.sin(phase) * move;
+        const meshAmp = numParam('meshDeform', 0) * amp;
+        const sway = Math.sin(phase);
+        dRot = rotSign * sway * rotRad;
+        dx = windDirX * sway * move;
+        dy = windDirY * sway * move;
+        if (meshAmp > 0.05) {
+          meshDeform = {
+            amplitude: meshAmp * windDirX * sway,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * sway : undefined,
+            frequency: 1.3,
+            phase,
+            anchorEdge: resolveAnchorEdge('top'),
+            axis: 'x',
+          };
+        }
         break;
       }
 
@@ -418,14 +474,17 @@ export function applyLayerModifiers(
         const rotRad = (numParam('rotationStrength', 3) * amp * Math.PI) / 180;
         const move = numParam('movementStrength', 4) * amp;
         const meshAmp = numParam('meshDeform', 4) * amp;
-        dRot = windSign * Math.sin(phase) * rotRad;
-        dx = windSign * Math.sin(phase) * move;
+        const sway = Math.sin(phase);
+        dRot = rotSign * sway * rotRad;
+        dx = windDirX * sway * move;
+        dy = windDirY * sway * move;
         if (meshAmp > 0.05) {
           meshDeform = {
-            amplitude: meshAmp * windSign * Math.sin(phase),
+            amplitude: meshAmp * windDirX * sway,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * sway : undefined,
             frequency: 1.4,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: resolveAnchorEdge('top'),
             axis: 'x',
           };
         }
@@ -437,16 +496,26 @@ export function applyLayerModifiers(
         const move = numParam('movementStrength', 8) * amp;
         const meshAmp = numParam('meshDeform', 11) * amp;
         const flutter = Math.sin(phase) * 0.7 + Math.cos(phase * 2.1) * 0.3;
-        dRot = windSign * flutter * rotRad;
-        dy = Math.sin(phase * 2) * move * 0.45;
-        dx = windSign * Math.cos(phase) * move * 0.3;
+        dRot = rotSign * flutter * rotRad;
+        dy = Math.sin(phase * 2) * move * 0.45 + windDirY * Math.sin(phase) * move * 0.4;
+        dx = windDirX * Math.cos(phase) * move * 0.3;
         if (meshAmp > 0.05) {
+          const defaultEdge = windSign > 0 ? 'left' : 'right';
+          const anchor = resolveAnchorEdge(defaultEdge);
           meshDeform = {
-            amplitude: meshAmp,
+            amplitude: anchor === 'left' || anchor === 'right' ? meshAmp : meshAmp * windDirX,
+            amplitudeY:
+              anchor === 'left' || anchor === 'right'
+                ? windDirY !== 0
+                  ? meshAmp * (0.6 + 0.4 * windDirY)
+                  : undefined
+                : windDirY !== 0
+                  ? meshAmp * windDirY
+                  : undefined,
             frequency: 2.5,
             phase,
-            anchorEdge: windSign > 0 ? 'left' : 'right',
-            axis: 'y',
+            anchorEdge: anchor,
+            axis: anchor === 'left' || anchor === 'right' ? 'y' : 'x',
           };
         }
         break;
@@ -457,15 +526,18 @@ export function applyLayerModifiers(
         const move = numParam('movementStrength', 6) * amp;
         const sc = numParam('scaleStrength', 0.03) * amp;
         const meshAmp = numParam('meshDeform', 6) * amp;
-        dRot = windSign * Math.sin(phase) * rotRad;
-        dx = windSign * Math.sin(phase) * move * 0.5;
+        const waveEnvelope = 0.4 + 0.6 * Math.sin(phase);
+        dRot = rotSign * Math.sin(phase) * rotRad;
+        dx = windDirX * Math.sin(phase) * move * 0.5;
+        dy = windDirY * Math.sin(phase) * move * 0.5;
         dScaleX = Math.sin(phase * 2) * sc;
         if (meshAmp > 0.05) {
           meshDeform = {
-            amplitude: meshAmp * windSign * (0.4 + 0.6 * Math.sin(phase)),
+            amplitude: meshAmp * windDirX * waveEnvelope,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * waveEnvelope : undefined,
             frequency: 1.8,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: resolveAnchorEdge('top'),
             axis: 'x',
           };
         }
@@ -476,14 +548,16 @@ export function applyLayerModifiers(
         const rotRad = (numParam('rotationStrength', 5) * amp * Math.PI) / 180;
         const move = numParam('movementStrength', 4) * amp;
         const meshAmp = numParam('meshDeform', 5) * amp;
-        dRot = windSign * Math.sin(phase) * rotRad;
-        dy = Math.cos(phase) * move;
+        dRot = rotSign * Math.sin(phase) * rotRad;
+        dy = Math.cos(phase) * move + windDirY * Math.sin(phase) * move * 0.4;
+        dx = windDirX !== 1 ? windDirX * Math.sin(phase) * move * 0.4 : 0;
         if (meshAmp > 0.05) {
           meshDeform = {
-            amplitude: meshAmp * Math.sin(phase),
+            amplitude: meshAmp * windDirX * Math.sin(phase),
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * Math.sin(phase) : undefined,
             frequency: 1.5,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: resolveAnchorEdge('top'),
             axis: 'x',
           };
         }
@@ -495,14 +569,16 @@ export function applyLayerModifiers(
         const move = numParam('movementStrength', 10) * amp;
         const meshAmp = numParam('meshDeform', 9) * amp;
         const gust = 0.55 + 0.45 * Math.sin(phase) + 0.2 * Math.sin(phase * 3);
-        dRot = windSign * gust * rotRad;
-        dx = windSign * gust * move * 0.7;
+        dRot = rotSign * gust * rotRad;
+        dx = windDirX * gust * move * 0.7;
+        dy = windDirY * gust * move * 0.7;
         if (meshAmp > 0.05) {
           meshDeform = {
-            amplitude: meshAmp * windSign * gust,
+            amplitude: meshAmp * windDirX * gust,
+            amplitudeY: windDirY !== 0 ? meshAmp * windDirY * gust : undefined,
             frequency: 2.3,
             phase,
-            anchorEdge: 'top',
+            anchorEdge: resolveAnchorEdge('top'),
             axis: 'x',
           };
         }

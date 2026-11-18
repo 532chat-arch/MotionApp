@@ -622,6 +622,7 @@ function drawPreviewScene(
 
   if (category === 'hair') {
     const wave = meshDeform ? meshDeform.amplitude * 1.15 : 0;
+    const waveY = meshDeform ? (meshDeform.amplitudeY ?? 0) * 1.1 : 0;
     // Crown anchor dot
     ctx.fillStyle = '#60A5FA';
     ctx.beginPath();
@@ -635,17 +636,17 @@ function drawPreviewScene(
       ctx.moveTo(sx - 5, -24);
       ctx.bezierCurveTo(
         sx - 6 + wave * 0.4,
-        -6,
+        -6 + waveY * 0.3,
         sx - 4 + wave * 0.95,
-        12,
+        12 + waveY * 0.75,
         sx + wave * 1.15,
-        26
+        26 + waveY
       );
       ctx.bezierCurveTo(
         sx + 6 + wave * 0.85,
-        12,
+        12 + waveY * 0.75,
         sx + 6 + wave * 0.35,
-        -6,
+        -6 + waveY * 0.3,
         sx + 5,
         -24
       );
@@ -654,14 +655,15 @@ function drawPreviewScene(
     });
   } else if (category === 'clothing') {
     const wave = meshDeform ? meshDeform.amplitude * 1.2 : 0;
+    const waveY = meshDeform ? (meshDeform.amplitudeY ?? 0) * 1.1 : 0;
     const isHorizontal = meshDeform?.anchorEdge === 'left' || meshDeform?.anchorEdge === 'right';
     if (isHorizontal) {
       // Scarf flutter ribbon anchored on left
       ctx.fillStyle = '#EC4899';
       ctx.beginPath();
       ctx.moveTo(-34, -8);
-      ctx.bezierCurveTo(-10, -10 + wave * 0.4, 14, -6 - wave * 0.6, 36, -4 + wave * 0.9);
-      ctx.lineTo(36, 9 + wave * 0.9);
+      ctx.bezierCurveTo(-10, -10 + wave * 0.4, 14, -6 - wave * 0.6, 36, -4 + wave * 0.9 + waveY * 0.5);
+      ctx.lineTo(36, 9 + wave * 0.9 + waveY * 0.5);
       ctx.bezierCurveTo(14, 7 - wave * 0.6, -10, 4 + wave * 0.4, -34, 6);
       ctx.closePath();
       ctx.fill();
@@ -671,9 +673,9 @@ function drawPreviewScene(
       ctx.beginPath();
       ctx.moveTo(-16, -24);
       ctx.lineTo(16, -24);
-      ctx.quadraticCurveTo(22 + wave * 0.55, 0, 26 + wave, 24);
-      ctx.quadraticCurveTo(wave * 0.6, 28, -26 + wave, 24);
-      ctx.quadraticCurveTo(-22 + wave * 0.55, 0, -16, -24);
+      ctx.quadraticCurveTo(22 + wave * 0.55, waveY * 0.4, 26 + wave, 24 + waveY);
+      ctx.quadraticCurveTo(wave * 0.6, 28 + waveY, -26 + wave, 24 + waveY);
+      ctx.quadraticCurveTo(-22 + wave * 0.55, waveY * 0.4, -16, -24);
       ctx.closePath();
       ctx.fill();
     }

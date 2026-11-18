@@ -20,6 +20,7 @@ import {
   PRESET_REGISTRY,
 } from '../../services/AnimationPresetRegistry';
 import { evaluatePresetPreviewState } from '../../components/PresetHoverPreview';
+import { Canvas2DRenderer } from '../../renderer/Canvas2DRenderer';
 
 describe('Cinematic Animation Engine & Presets', () => {
   it('registers all 42 presets across 7 categories with valid metadata', () => {
@@ -609,5 +610,131 @@ describe('Cinematic Animation Engine & Presets', () => {
     const badJson = artistB.importPresetsFromJson('{ not valid json');
     expect(badJson.ok).toBe(false);
     expect(badJson.errors.length).toBe(1);
+  });
+
+  it('exposes full direction, angle, and root-anchor controls across hair & cloth presets and evaluates 2D vectors', () => {
+    const hairAndCloth = [
+      ...getAvailablePresets('hair'),
+      ...getAvailablePresets('clothing'),
+    ];
+    expect(hairAndCloth.length).toBe(10);
+    for (const preset of hairAndCloth) {
+      const keys = preset.parameterControls.map((c) => c.key);
+      expect(keys).toContain('windDirection');
+      expect(keys).toContain('windAngle');
+    }
+
+    const base = {
+      x: 0,
+      y: 0,
+      rotation: 0,
+      scaleX: 1,
+      scaleY: 1,
+      pivotX: 0,
+      pivotY: 0,
+      opacity: 1,
+    };
+
+    // Custom 45-degree wind angle + left root anchor
+    const customAngleMod = createModifierFromPreset('hair.gentle-wind', 24, 'mod_dir_45', {
+      params: {
+        rotationStrength: 4,
+        movementStrength: 10,
+        meshDeform: 8,
+        windDirection: 'custom',
+        windAngle: 45,
+        anchorEdge: 'left',
+      },
+    })!;
+    const eval45 = applyLayerModifiers(base, [customAngleMod], 15, 200, 300);
+    expect(eval45.meshDeform?.anchorEdge).toBe('left');
+    expect(Math.abs(eval45.meshDeform?.amplitude ?? 0)).toBeGreaterThan(0.1);
+    expect(Math.abs(eval45.meshDeform?.amplitudeY ?? 0)).toBeGreaterThan(0.1);
+    expect(eval45.transform.y).not.toBe(0);
+
+    // Upward wind direction drives negative vertical offset & vertical mesh wave
+    const upMod = createModifierFromPreset('cloth.gentle-sway', 24, 'mod_dir_up', {
+      params: {
+        rotationStrength: 0,
+        movementStrength: 8,
+        meshDeform: 6,
+        windDirection: 'up',
+      },
+    })!;
+    const evalUp = applyLayerModifiers(base, [upMod], 15, 200, 300);
+    expect(evalUp.transform.x).toBeCloseTo(0, 5);
+    expect(evalUp.transform.y).toBeLessThan(0);
+    expect(evalUp.meshDeform?.amplitude).toBeCloseTo(0, 5);
+    expect(evalUp.meshDeform?.amplitudeY).toBeLessThan(0);
+  });
+
+  it('renders mesh deformation using high-density sheared micro-strips instead of coarse un-sheared blocks', () => {
+    const renderer = new Canvas2DRenderer() as unknown as {
+      drawImageWithMeshDeform: (
+        ctx: unknown,
+        img: unknown,
+        sx: number,
+        sy: number,
+        sw: number,
+        sh: number,
+        dx: number,
+        dy: number,
+        dw: number,
+        dh: number,
+        deform: {
+          amplitude: number;
+          amplitudeY?: number;
+          frequency: number;
+          phase: number;
+          anchorEdge: 'top' | 'bottom' | 'left' | 'right';
+          axis: 'x' | 'y';
+        },
+        quality: 'full' | 'reduced'
+      ) => void;
+    };
+
+    let drawCalls = 0;
+    let transformCalls = 0;
+    let hasNonZeroShear = false;
+    const mockCtx = {
+      save: () => {},
+      restore: () => {},
+      translate: () => {},
+      transform: (_a: number, b: number, c: number) => {
+        transformCalls += 1;
+        if (Math.abs(b) > 1e-4 || Math.abs(c) > 1e-4) {
+          hasNonZeroShear = true;
+        }
+      },
+      drawImage: () => {
+        drawCalls += 1;
+      },
+    };
+
+    renderer.drawImageWithMeshDeform(
+      mockCtx,
+      {},
+      0,
+      0,
+      400,
+      600,
+      -200,
+      -300,
+      400,
+      600,
+      {
+        amplitude: 12,
+        amplitudeY: 4,
+        frequency: 1.5,
+        phase: 0.7,
+        anchorEdge: 'top',
+        axis: 'x',
+      },
+      'full'
+    );
+
+    expect(drawCalls).toBeGreaterThanOrEqual(36);
+    expect(transformCalls).toBe(drawCalls);
+    expect(hasNonZeroShear).toBe(true);
   });
 });

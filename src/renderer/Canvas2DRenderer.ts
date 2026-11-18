@@ -466,42 +466,69 @@ export class Canvas2DRenderer implements IRendererAdapter {
     deform: EvaluatedObject['meshDeform'],
     quality: 'full' | 'reduced'
   ) {
-    if (!deform || Math.abs(deform.amplitude) < 0.15) {
+    const ampX = deform?.amplitude ?? 0;
+    const ampY = deform?.amplitudeY ?? 0;
+    if (!deform || (Math.abs(ampX) < 0.08 && Math.abs(ampY) < 0.08)) {
       ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
       return;
     }
 
-    const strips = quality === 'reduced' ? 8 : 14;
     const isHorizontalEdge = deform.anchorEdge === 'top' || deform.anchorEdge === 'bottom';
+    const span = Math.max(1, isHorizontalEdge ? Math.abs(dh) : Math.abs(dw));
+    const strips =
+      quality === 'reduced'
+        ? Math.max(20, Math.min(48, Math.round(span / 4)))
+        : Math.max(36, Math.min(96, Math.round(span / 2.5)));
+
+    const evalOffsetAt = (frac: number): { ox: number; oy: number } => {
+      const tipDist =
+        deform.anchorEdge === 'bottom' || deform.anchorEdge === 'right' ? 1 - frac : frac;
+      const weight = tipDist * tipDist;
+      const wave = Math.sin(tipDist * deform.frequency * Math.PI * 2 - deform.phase);
+      if (deform.axis === 'x') {
+        return {
+          ox: wave * ampX * weight,
+          oy: wave * ampY * weight,
+        };
+      }
+      return {
+        ox: wave * ampY * weight,
+        oy: wave * ampX * weight,
+      };
+    };
 
     for (let i = 0; i < strips; i++) {
       const frac0 = i / strips;
       const frac1 = (i + 1) / strips;
-      // Distance from anchored edge (0 at anchor, 1 at free tip)
-      let tipDist = frac0 + 0.5 / strips;
-      if (deform.anchorEdge === 'bottom' || deform.anchorEdge === 'right') {
-        tipDist = 1 - tipDist;
-      }
-      const weight = tipDist * tipDist;
-      const wave = Math.sin(tipDist * deform.frequency * Math.PI * 2 - deform.phase);
-      const offset = wave * deform.amplitude * weight;
+      const { ox: ox0, oy: oy0 } = evalOffsetAt(frac0);
+      const { ox: ox1, oy: oy1 } = evalOffsetAt(frac1);
 
       if (isHorizontalEdge) {
         const sStripY = sy + frac0 * sh;
-        const sStripH = (frac1 - frac0) * sh;
+        const sStripH = Math.max(0.01, (frac1 - frac0) * sh);
         const dStripY = dy + frac0 * dh;
-        const dStripH = (frac1 - frac0) * dh + 0.75; // 0.75px overlap prevents hairlines
-        const ox = deform.axis === 'x' ? offset : 0;
-        const oy = deform.axis === 'y' ? offset : 0;
-        ctx.drawImage(img, sx, sStripY, sw, sStripH, dx + ox, dStripY + oy, dw, dStripH);
+        const dStripH = (frac1 - frac0) * dh;
+        const shearX = Math.abs(dStripH) > 0.001 ? (ox1 - ox0) / dStripH : 0;
+        const stretchY = Math.max(0.25, 1 + (Math.abs(dStripH) > 0.001 ? (oy1 - oy0) / dStripH : 0));
+
+        ctx.save();
+        ctx.translate(dx + ox0, dStripY + oy0);
+        ctx.transform(1, 0, shearX, stretchY, 0, 0);
+        ctx.drawImage(img, sx, sStripY, sw, sStripH, 0, 0, dw, dStripH + 0.45);
+        ctx.restore();
       } else {
         const sStripX = sx + frac0 * sw;
-        const sStripW = (frac1 - frac0) * sw;
+        const sStripW = Math.max(0.01, (frac1 - frac0) * sw);
         const dStripX = dx + frac0 * dw;
-        const dStripW = (frac1 - frac0) * dw + 0.75;
-        const ox = deform.axis === 'x' ? offset : 0;
-        const oy = deform.axis === 'y' ? offset : 0;
-        ctx.drawImage(img, sStripX, sy, sStripW, sh, dStripX + ox, dy + oy, dStripW, dh);
+        const dStripW = (frac1 - frac0) * dw;
+        const shearY = Math.abs(dStripW) > 0.001 ? (oy1 - oy0) / dStripW : 0;
+        const stretchX = Math.max(0.25, 1 + (Math.abs(dStripW) > 0.001 ? (ox1 - ox0) / dStripW : 0));
+
+        ctx.save();
+        ctx.translate(dStripX + ox0, dy + oy0);
+        ctx.transform(stretchX, shearY, 0, 1, 0, 0);
+        ctx.drawImage(img, sStripX, sy, sStripW, sh, 0, 0, dStripW + 0.45, dh);
+        ctx.restore();
       }
     }
   }

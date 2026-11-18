@@ -512,13 +512,23 @@ export const MotionModifierStack: React.FC<MotionModifierStackProps> = ({
                             <span className="text-[10px] text-slate-400">{ctrl.label}</span>
                             <select
                               value={String(rawVal)}
-                              onChange={(e) =>
+                              onChange={(e) => {
+                                const nextVal = e.target.value;
+                                const patch: Record<string, string | number | boolean> = {
+                                  [ctrl.key]: nextVal,
+                                };
+                                if (ctrl.key === 'windDirection') {
+                                  if (nextVal === 'right') patch.windAngle = 0;
+                                  else if (nextVal === 'left') patch.windAngle = 180;
+                                  else if (nextVal === 'up') patch.windAngle = -90;
+                                  else if (nextVal === 'down') patch.windAngle = 90;
+                                }
                                 updateMotionModifier(
                                   mod.id,
-                                  { params: { [ctrl.key]: e.target.value } },
+                                  { params: patch },
                                   { compositionId, layerId, targetScope }
-                                )
-                              }
+                                );
+                              }}
                               className="w-full min-h-[36px] px-2 rounded-lg bg-[#111317] border border-white/10 text-[11px] text-slate-200"
                             >
                               {ctrl.options?.map((opt) => (
@@ -571,13 +581,20 @@ export const MotionModifierStack: React.FC<MotionModifierStackProps> = ({
                             max={ctrl.max ?? 100}
                             step={ctrl.step ?? 1}
                             value={numVal}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const nextNum = parseFloat(e.target.value);
+                              const patch: Record<string, string | number | boolean> = {
+                                [ctrl.key]: nextNum,
+                              };
+                              if (ctrl.key === 'windAngle') {
+                                patch.windDirection = 'custom';
+                              }
                               updateMotionModifier(
                                 mod.id,
-                                { params: { [ctrl.key]: parseFloat(e.target.value) } },
+                                { params: patch },
                                 { compositionId, layerId, targetScope }
-                              )
-                            }
+                              );
+                            }}
                             className="w-full accent-amber-400 h-2 bg-[#0D0F12] rounded-lg"
                           />
                         </div>
